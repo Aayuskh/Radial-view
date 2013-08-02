@@ -1,6 +1,7 @@
 (function(){if (!Date.now) Date.now = function() {
   return +new Date;
 };
+
 try {
   document.createElement("div").style.setProperty("opacity", 0, "");
 } catch (error) {
