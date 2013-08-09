@@ -28,6 +28,11 @@ var lastNodeIdx;
 //adjust step when overlap happens, result will be much more precise if the value is smaller
 var nodeAdjustStep = 1;
 
+//minimum importance and second minimum ni current level
+var minImpNode, sndMinImpNode;
+
+//gray array
+var grayNodes = new Array();
 
 
 //use projection for map x, y coordinates to polar coordinates
@@ -110,6 +115,28 @@ function add(node) {
     redraw();
 }
 
+//delete a node that has no children
+function deleteNode(node) {
+  if(node.children == null) {
+    for(var i = 0; i < nodes.length;++i) {
+      if(nodes[i].id == node.id) {
+        removeFromRoot(nodes[0], node);
+        break;
+      }
+    }
+    nodes = tree.nodes(nodes[0]);
+    links = tree.links(nodes);
+    adjustOverlap();
+    redraw();
+  }
+}
+
+//make gray for deleted node that has children
+function makeGray(node) {
+  var circle = d3.select("#"+node.id).select("circle");
+  circle.attr("style", "fill: #fff;stroke: lightgray;stroke-width: 3px;");
+}
+
 //draw the radial tree when the page is load (all nodes have already been put to proper positions so that there is no overlap)
 function draw() {
   svg = d3.select("body").append("svg")
@@ -139,8 +166,19 @@ function draw() {
       })
       .attr("transform", function(d) { return "rotate(" + (d.x - 90) + ")translate(" + d.y + ")"; })
       .on("click", function(d) {
-        if(d.merged == null)
+        if(d.merged == null && d.deleted == null)
           add(d);
+      })
+      .on("contextmenu", function(d) {
+        d.deleted = true;
+        d3.event.preventDefault();
+        if(d.children == null) {
+          deleteNode(d);
+        }
+        else {
+          grayNodes.push(d);
+          makeGray(d);
+        }
       });
 
   node.append("circle")
@@ -155,13 +193,10 @@ function draw() {
       .attr("style", "font-size:large")
       .text(function(d) { 
         if(d.merged != null) {
-          if(d.id == "level_1_merge")
-            return firstLevelMergeCount;
-          else
-            return "self merged";
+          return "merge: " + d.mergeCount;
         }
         else
-          return null;
+          return getNodeImportance(d);
       });
 
   document.getElementById('cell').focus();
@@ -177,6 +212,7 @@ function drawLine() {
     svg.select("#" + id).remove();
     svg.append("line")
       .attr("class", "link")
+      .attr("id", id)
       .attr("x1", 0)
       .attr("y2", 0)
       .attr("x2", links[i].target.y * Math.cos((links[i].target.x + 270) * Math.PI / 180))
@@ -208,8 +244,18 @@ function redraw() {
       })
       .attr("transform", function(d) { return "rotate(" + (d.x - 90) + ")translate(" + d.y + ")"; })
       .on("click", function(d) {
-        if(d.merged == null)
+        if(d.merged == null && d.deleted == null)
           add(d);
+      })
+      .on("contextmenu", function(d) {
+        d.deleted = true;
+        d3.event.preventDefault();
+        if(d.children == null)
+          deleteNode(d);
+        else {
+          grayNodes.push(d);
+          makeGray(d);
+        }
       });
 
 
@@ -218,6 +264,9 @@ function redraw() {
         return nodesRadius[d.importance];
       });
 
+  for(var i = 0; i < grayNodes.length; ++i)
+    makeGray(grayNodes[i]);
+
   node.append("text")
       .attr("dy", ".31em")
       .attr("text-anchor", function(d) { return d.x < 180 ? "start" : "end"; })
@@ -225,13 +274,10 @@ function redraw() {
       .attr("style", "font-size:large")
       .text(function(d) { 
         if(d.merged != null) {
-          if(d.id == "level_1_merge")
-            return firstLevelMergeCount;
-          else
-            return "self merged";
+          return "merge: " + d.mergeCount;
         }
         else
-          return null;
+          return getNodeImportance(d);
       });
           
 }
@@ -308,128 +354,237 @@ function nodeMerge() {
       angle = Math.PI * 2 - angle;
     var dist = 2 * levelNodes[last].y * Math.sin(angle / 2);
     if(dist < nodesRadius[levelNodes[last-1].importance] + nodesRadius[levelNodes[last].importance] + 2) {
-      if(i == 1) {
-        var minImpNode = getMinImpNode(i);
-        if(firstLevelMergeCount >= 1) {
-          mergeFirstLevel(minImpNode);
+
+        //if the merge level's parent level nodes all have less than one child, just merge minimum importance node in parent level
+        if(i != 1 && allNodesOneChild(i-1)) {
+          getMinImpNode(i);
+          mergeParentLevel(minImpNode.parent);
         }
+        //else merge current level
         else {
-          var sndMinImpNode = getSndMinImpNode(i, minImpNode);
-          mergeFirstLevel(minImpNode, sndMinImpNode);
+          getTwoMinImpNodesWithSameParent(i);
+          mergeCurrentLevel(minImpNode.parent);
+
         }
-        
+        //update the merged node in root node so that tree.nodes(root) can then update the entire tree
+        update(nodes[0], minImpNode.parent);
         nodes = tree.nodes(nodes[0]);
         links = tree.links(nodes);
         adjustOverlap();
         nodeMerge();
         redraw();
       }
-      else {
-        var minImpNode = getMinImpNodeLargerThanTwo(i-1);
-        mergeOtherLevels(i-1, minImpNode);
-        links = tree.links(nodes);
-        adjustOverlap();
-        nodeMerge();
-        redraw();
-      }
-    }
   }
 }
 
-//get minimum importance node in a certain level
-function getMinImpNode(level) {
-  var minImp = getNodeImportance(nodesByLevel[level][0]);
-  var minImpNode;
-  for(var i = 1; i < nodesByLevel[level].length; ++i) {
-    if(minImp > getNodeImportance(nodesByLevel[level][i]) && nodesByLevel[level][i].id != "level_1_merge") {
-      minImp = getNodeImportance(nodesByLevel[level][i]);
-      minImpNode = nodesByLevel[level][i];
-    }
-  }
-  return minImpNode;
-}
-
-//get minimum importance node whose importance is larger than two in a certain level
-function getMinImpNodeLargerThanTwo(level) {
-  var minImp;
-  var minImpNode;
+//judge if all nodes in a certain level have only one child or no child
+function allNodesOneChild(level) {
+  var res = true;
   for(var i = 0; i < nodesByLevel[level].length; ++i) {
-    if(getNodeImportance(nodesByLevel[level][i]) > 1 && nodesByLevel[level][i].id != "level_1_merge") {
-      minImp = getNodeImportance(nodesByLevel[level][i]);
-      minImpNode = nodesByLevel[level][i];
-    }
-  }
-
-  for(var i = 0; i < nodesByLevel[level].length; ++i) {
-    if(minImp > getNodeImportance(nodesByLevel[level][i]) && getNodeImportance(nodesByLevel[level][i]) > 1 && nodesByLevel[level][i].id != "level_1_merge") {
-      minImp = getNodeImportance(nodesByLevel[level][i]);
-      minImpNode = nodesByLevel[level][i];
-    }
-  }
-
-  return minImpNode;
-}
-
-//get second minimum importance node in a certain level
-function getSndMinImpNode(level, minImpNode) {
-  var sndMinImp = getNodeImportance(nodesByLevel[level][0]);
-  var sndMinImpNode;
-  for(var i = 1; i < nodesByLevel[level].length; ++i) {
-    if(nodesByLevel[level][i].id != minImpNode.id && nodesByLevel[level][i].id != "level_1_merge") {
-      if(sndMinImp > getNodeImportance(nodesByLevel[level][i])) {
-        sndMinImp = getNodeImportance(nodesByLevel[level][i]);
-        sndMinImpNode = nodesByLevel[level][i];
-      }
-    }
-    
-  }
-  return sndMinImpNode;
-}
-
-//merge first level node if overlap happens in first level
-function mergeFirstLevel(minImpNode, sndMinImpNode) {
-  for(var i = 0; i < nodes[0].children.length; ++i) {
-    if(nodes[0].children[i] != null && minImpNode.id == nodes[0].children[i].id) {
-      removeByIndex(i);
+    if(nodesByLevel[level][i].children != null && nodesByLevel[level][i].children.length > 1) {
+      res = false;
       break;
     }
   }
+  return res;
+}
 
-  if(sndMinImpNode == null) {
-    for(var i = 0; i < nodes[0].children.length; ++i) {
-      if(nodes[0].children[i].id == "level_1_merge") {
-        nodes[0].children[i].mergeCount = ++firstLevelMergeCount;
-        nodes[0].children[i].mergedChildren.push(minImpNode);
-      }
-    }
+//get minimum importance node in a certain level (if node is specified, for the node)
+function getMinImpNode(level) {
 
-  }
-  else {
-
-    for(var i = 0; i < nodes[0].children.length; ++i) {
-      if(sndMinImpNode.id == nodes[0].children[i].id) {
-        nodes[0].children[i].id = "level_1_merge";
-        nodes[0].children[i].importance = 3;
-        nodes[0].children[i].merged = true;
-        delete nodes[0].children[i].children;
-        firstLevelMergeCount += 2;
-        nodes[0].children[i].mergeCount = firstLevelMergeCount;
-        if(firstLevelMergeCount == 2)
-          nodes[0].children[i].mergedChildren = new Array();
-        if(minImpNode.id != "level_1_merge") 
-          nodes[0].children[i].mergedChildren.push(minImpNode);
-        if(sndMinImpNode.id != "level_1_merge")
-          nodes[0].children[i].mergedChildren.push(sndMinImpNode);
-      }
+  var minImp = getNodeImportance(nodesByLevel[level][0]);
+  for(var i = 1; i < nodesByLevel[level].length; ++i) {
+    if(minImp > getNodeImportance(nodesByLevel[level][i]) && nodesByLevel[level][i].merged == null) {
+      minImp = getNodeImportance(nodesByLevel[level][i]);
+      minImpNode = nodesByLevel[level][i];
     }
   }
 }
 
-//merge other level nodes if overlap happens in other level
-function mergeOtherLevels(level, minImpNode) {
+//self-merge the less importance node whoes parent level has all one-child nodes
+function mergeParentLevel(minImpNode) {
   removeChildren(nodes[0], minImpNode);
   nodes = tree.nodes(nodes[0]);
-  getNodesLevel();
+}
+
+
+//get two minimum importance nodes with same parent in a certain level
+function getTwoMinImpNodesWithSameParent(level) {
+  var minTmp, sndTmp;
+  var minNodeTmp, sndMinNodeTmp;
+  var startIdx;
+  for(var i = 0; i < nodesByLevel[level-1].length; ++i) {
+    if((nodesByLevel[level-1][i].children.length >= 2 && nodesByLevel[level-1][i].firstMerge == null) || (nodesByLevel[level-1][i].children.length >= 3 && nodesByLevel[level-1][i].firstMerge != null)) {
+      getTwoMinImpNodes(nodesByLevel[level-1][i]);
+      minNodeTmp = minImpNode;
+      sndMinNodeTmp = sndMinImpNode;
+      minTmp = getNodeImportance(minImpNode);
+      sndTmp = getNodeImportance(sndMinImpNode);
+      startIdx = i+1;
+      break;
+    }
+  }
+  
+
+  for(var i = startIdx; i < nodesByLevel[level-1].length; ++i) {
+    if(nodesByLevel[level-1][i].children == null || nodesByLevel[level-1][i].children.length < 2)
+      continue;
+    getTwoMinImpNodes(nodesByLevel[level-1][i]);
+    if((getNodeImportance(minImpNode) + getNodeImportance(sndMinImpNode)) < (minTmp + sndTmp)) {
+      minNodeTmp = minImpNode;
+      sndMinNodeTmp = sndMinImpNode;
+      minTmp = getNodeImportance(minImpNode);
+      sndTmp = getNodeImportance(sndMinImpNode);
+      
+    }
+  }
+
+  minImpNode = minNodeTmp;
+  sndMinImpNode = sndMinNodeTmp;
+}
+
+//get two minimum importance children for a certain node
+function getTwoMinImpNodes(node) {
+  getMinImpNodeByParent(node);
+  getSndMinImpNodeByParent(node);
+}
+
+//get minimum importance child for a certain node
+function getMinImpNodeByParent(node) {
+  if(node.children == null)
+    return;
+  if((node.children.length == 1 && node.firstMerge == null) || (node.children.length == 2 && node.firstMerge != null)) {
+    minImpNode = node.children[0];
+    return;
+  }
+
+
+  minImpNode = node.children[0].merged == null ? node.children[0] : node.children[1];
+  var minImp = getNodeImportance(minImpNode);
+  for(var i = 0; i < node.children.length; ++i) {
+    if(minImp > getNodeImportance(node.children[i]) && node.children[i].merged == null) {
+      minImp = getNodeImportance(node.children[i]);
+      minImpNode = node.children[i];
+    }
+  }
+}
+
+//get second minimum importance child for a certain node
+function getSndMinImpNodeByParent(node) {
+
+  if(node.children == null || (node.children.length == 1 && node.firstMerge != null))
+    return;
+  if((node.children.length == 1 && node.firstMerge == null) || (node.children.length == 2 && node.firstMerge != null)) {
+    sndMinImpNode = null;
+    return;
+  }
+
+  sndMinImpNode = (minImpNode.id == node.children[0].id ? node.children[1] : node.children[0]);
+  if(sndMinImpNode.merged != null)
+    sndMinImpNode = node.children[2];
+  var sndMinImp = getNodeImportance(sndMinImpNode);
+
+  for(var i = 1; i < node.children.length; ++i) {
+    if(node.children[i].id != minImpNode.id && sndMinImp > getNodeImportance(node.children[i]) && node.children[i].merged == null) {
+      sndMinImp = getNodeImportance(node.children[i]);
+      sndMinImpNode = node.children[i];
+    }
+  }
+
+}
+
+//merge current level node if overlap happens in this level
+function mergeCurrentLevel(parentNode) {
+
+  if(parentNode.isFirstMerge != null) {
+    merge(parentNode);
+  }
+  else {
+    firstMerge(parentNode);
+  }
+}
+
+//remove child node in parentNode by index
+function removeByIndex(parentNode, index) {
+  var tmp = parentNode.children.slice(0);
+  parentNode.children = new Array();
+  for(var i = 0; i < tmp.length; ++i) {
+    if(i != index) 
+      parentNode.children.push(tmp[i]);
+  }
+}
+
+//merge certain parentNode after the first time
+function merge(parentNode) {
+  var mergeId = parentNode.id + "_merge";
+  var tmpIdx;
+  for(var i = 0; i < parentNode.children.length; ++i) {
+    if(parentNode.children[i].id == mergeId) {
+      ++parentNode.children[i].mergeCount;
+      parentNode.children[i].mergedChildren.push(minImpNode);
+    }
+    if(parentNode.children[i].id == minImpNode.id)
+      tmpIdx = i;
+  }
+
+  removeByIndex(parentNode, tmpIdx);
+}
+
+//merge certain parentNode if this is the first time this node get merged
+function firstMerge(parentNode) {
+  var tmpIdx;
+  for(var i = 0; i < parentNode.children.length; ++i) {
+    if(parentNode.children[i].id == minImpNode.id) {
+      tmpIdx = i;
+    }
+    if(parentNode.children[i].id == sndMinImpNode.id) {
+      if(parentNode.children[i].mergeCount == null)
+        parentNode.children[i].mergeCount = 0;
+      parentNode.children[i].mergeCount += 2;
+      if(parentNode.children[i].mergedChildren == null)
+        parentNode.children[i].mergedChildren = new Array();
+      parentNode.children[i].mergedChildren.push(minImpNode);
+      parentNode.children[i].mergedChildren.push(sndMinImpNode);
+      delete parentNode.children[i].children;
+      parentNode.children[i].id = parentNode.id + "_merge";
+      parentNode.children[i].importance = 3;
+      parentNode.children[i].merged = true;
+      parentNode.children[i].parent = parentNode;
+      parentNode.children[i].depth = parentNode.depth + 1;
+    }
+  }
+
+  removeByIndex(parentNode,tmpIdx);
+  parentNode.isFirstMerge = false;
+} 
+
+//update node in root so that we can use tree.nodes(root) to update entire tree
+function update(root, node) {
+  if(root.id == node.id) {
+    root = node;
+    return;
+  }
+  else if(root.children != null) {
+    for(var i = 0; i < root.children.length; ++i) {
+      update(root.children[i], node);
+    }
+  }
+}
+
+//get node importance of a certain node
+//note: node importance is decided by their children importance recursively
+function getNodeImportance(node) {
+  if(node == null)
+    return 0;
+  var imp = 4-node.importance;
+  if(node.children == null) {
+    return imp;
+  }
+  for(var i = 0; i < node.children.length; ++i) {
+    imp += getNodeImportance(node.children[i]);
+  }
+  return imp;
+
 }
 
 //remove a certain node's children from root node
@@ -448,26 +603,23 @@ function removeChildren(root, node) {
   }
 }
 
-//remove children from root node by index
-function removeByIndex(index) {
-  var tmp = nodes[0].children.slice(0);
-  nodes[0].children = new Array();
-  for(var i = 0; i < tmp.length; ++i) {
-    if(i != index) 
-      nodes[0].children.push(tmp[i]);
+//delete a node from root node
+function removeFromRoot(root, node) {
+  if(root == null)
+    return;
+  if(root.id == node.parent.id) {
+    for(var i = 0; i < node.parent.children.length; ++i) {
+      if(node.parent.children[i].id == node.id) {
+        removeByIndex(root, i)
+        if(root.children.length == 0)
+          delete root.children;
+        break;
+        
+      }
+    }
   }
-}
-
-//get node importance of a certain node
-//note: node importance is decided by their children number recursively
-function getNodeImportance(node) {
-  var imp = 1;
-  if(node.children == null) {
-    return 1;
+  else if(root.children != null) {
+    for(var i = 0; i < root.children.length; ++i)
+      removeFromRoot(root.children[i], node);
   }
-  for(var i = 0; i < node.children.length; ++i) {
-    imp += getNodeImportance(node.children[i]);
-  }
-  return imp;
-
 }
